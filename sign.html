@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOTCOIN 水龙头签名</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;margin:16px;line-height:1.6;color:#111;background:#fff}
+pre{white-space:pre-wrap;word-break:break-all;background:#f2f2f2;padding:12px;border-radius:8px;font-size:14px}
+button{font-size:18px;padding:14px 20px;border-radius:10px;border:0;background:#111;color:#fff;width:100%;margin:12px 0}
+button.secondary{background:#eee;color:#111}
+button:disabled{background:#ccc}
+textarea{width:100%;min-height:120px;font-size:14px;word-break:break-all;box-sizing:border-box}
+input{width:100%}
+.warn{color:#b00020;font-weight:bold}
+.ok{color:#0a7a42;font-weight:bold}
+.small{font-size:14px;color:#555}
+.field{font-size:14px}
+</style>
+</head>
+<body>
+<h2>BOTCOIN 水龙头签名</h2>
+<p class="small">这不是转账，不花 gas，不授权代币。只证明这个钱包是你的。请先核对消息，域名、地址、Agent ID、nonce 都对得上再点签名。本页绝不会问你要私钥或助记词，不要在任何地方输那些。</p>
+<p id="walletStatus" class="small">正在检测钱包……</p>
+<label class="small">把完整 SIWA 消息粘贴到这里（也可以直接用带 ?m= 的链接打开）：</label>
+<textarea id="paste" placeholder="粘贴完整消息，例如 coordinator.agentmoney.net wants you to sign in with your Agent account: ..."></textarea>
+<button id="useBtn">使用这条消息</button>
+<div id="fields" class="field"></div>
+<pre id="msg" style="display:none"></pre>
+<p id="countdown"></p>
+<button id="signBtn" disabled>点一下签名</button>
+<p id="status"></p>
+<label class="small">签名结果（复制这一串发回给 Muse）：</label>
+<textarea id="sig" readonly placeholder="签名出现在这里"></textarea>
+<button class="secondary" id="copyBtn">复制签名</button>
+<p class="small">如果显示没有检测到钱包，请在 OKX App 的 DApp 浏览器里打开本页，不要在普通浏览器、微信或聊天内置浏览器里打开。</p>
+<script>
+var EXPECTED = "0x88ff681e9616885753fc7e57dd3a0e27df809058".toLowerCase();
+function getProvider(){
+  if(window.okxwallet && window.okxwallet.ethereum) return window.okxwallet.ethereum;
+  if(window.okxwallet) return window.okxwallet;
+  if(window.ethereum) return window.ethereum;
+  return null;
+}
+function updateWalletStatus(){
+  var el = document.getElementById("walletStatus");
+  if(getProvider()){ el.textContent = "已检测到钱包，可以签名。"; el.className = "ok"; }
+  else { el.textContent = "没有检测到钱包。请在 OKX App 的 DApp 浏览器里打开本页。"; el.className = "warn"; }
+}
+updateWalletStatus();
+function parseFields(t){
+  function m(re){ var x = t.match(re); return x ? x[1].trim() : "-"; }
+  var domain = t.split(" wants you")[0] || "-";
+  return "域名：" + domain + "<br>钱包地址：" + m(/0x[0-9a-fA-F]{40}/) + "<br>Agent ID：" + m(/Agent ID:\s*(\d+)/) + "<br>链 ID：" + m(/Chain ID:\s*(\d+)/) + "<br>Nonce：" + m(/Nonce:\s*([^\s]+)/) + "<br>过期时间：" + m(/Expiration Time:\s*([^\n]+)/);
+}
+var expMs = 0, timer = null;
+function setMessage(t){
+  t = t.trim();
+  if(!t) return;
+  document.getElementById("msg").textContent = t;
+  document.getElementById("msg").style.display = "block";
+  document.getElementById("fields").innerHTML = parseFields(t);
+  var em = t.match(/Expiration Time:\s*([^\n]+)/);
+  expMs = em ? Date.parse(em[1].trim()) : 0;
+  if(timer) clearInterval(timer);
+  function tick(){
+    var el = document.getElementById("countdown");
+    if(!expMs){ el.textContent = ""; return; }
+    var left = Math.max(0, Math.floor((expMs - Date.now())/1000));
+    if(left <= 0){ el.textContent = "已过期，请让 Muse 发一段新消息粘贴进来。"; el.className = "warn"; document.getElementById("signBtn").disabled = true; }
+    else { el.textContent = "还剩 " + left + " 秒"; el.className = ""; document.getElementById("signBtn").disabled = false; }
+  }
+  timer = setInterval(tick, 1000); tick();
+  document.getElementById("status").textContent = "消息已载入，核对无误后点签名。";
+}
+function getFromParams(){
+  try{
+    var q = new URLSearchParams(window.location.search).get("m");
+    if(q) return q;
+    var h = window.location.hash;
+    if(h.indexOf("m=") >= 0) return decodeURIComponent(h.split("m=")[1]);
+  }catch(e){}
+  return "";
+}
+var initial = getFromParams();
+if(initial){ document.getElementById("paste").value = initial; setMessage(initial); }
+document.getElementById("useBtn").onclick = function(){ setMessage(document.getElementById("paste").value); updateWalletStatus(); };
+function hexMsg(s){
+  var bytes = new TextEncoder().encode(s);
+  var h = "0x";
+  for(var i=0;i<bytes.length;i++){ h += bytes[i].toString(16).padStart(2,"0"); }
+  return h;
+}
+document.getElementById("signBtn").onclick = async function(){
+  var st = document.getElementById("status");
+  try{
+    updateWalletStatus();
+    var provider = getProvider();
+    if(!provider){ st.textContent = "没有检测到钱包，请在 OKX App 的 DApp 浏览器里打开本页再签。"; st.className = "warn"; return; }
+    var accounts = await provider.request({method: "eth_requestAccounts"});
+    var addr = accounts && accounts[0] ? accounts[0] : "";
+    if(addr.toLowerCase() !== EXPECTED){
+      st.textContent = "当前钱包地址不是 0x88ff…9058，当前是 " + addr + "，请切换到正确的钱包再签。";
+      st.className = "warn"; return;
+    }
+    var msg = document.getElementById("msg").innerText;
+    if(!msg){ st.textContent = "请先粘贴消息并点“使用这条消息”。"; st.className = "warn"; return; }
+    var hex = hexMsg(msg);
+    var sig;
+    try{ sig = await provider.request({method: "personal_sign", params: [hex, addr]}); }
+    catch(e){ sig = await provider.request({method: "personal_sign", params: [addr, hex]}); }
+    document.getElementById("sig").value = sig;
+    st.textContent = "签名成功！点下面复制签名，发回给 Muse。";
+    st.className = "ok";
+  }catch(e){
+    st.textContent = "签名失败或被取消：" + (e && e.message ? e.message : e);
+    st.className = "warn";
+  }
+};
+document.getElementById("copyBtn").onclick = async function(){
+  var t = document.getElementById("sig");
+  if(!t.value){ return; }
+  try{ await navigator.clipboard.writeText(t.value); }catch(e){ t.select(); document.execCommand("copy"); }
+  document.getElementById("status").textContent = "已复制签名，发回给 Muse 吧。";
+};
+</script>
+</body>
+</html>
